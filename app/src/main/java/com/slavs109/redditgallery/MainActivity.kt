@@ -37,7 +37,7 @@ private suspend fun loadFeed(context: android.content.Context, feeds: List<Strin
             connection.setRequestProperty("Authorization", "Bearer $accessToken")
             try {
                 val code = connection.responseCode
-                if (code !in 200..299) error("Reddit returned HTTP $code for r/$subreddit. Public feed access may be restricted.")
+                if (code !in 200..299) error(if (code == 401 || code == 403) "Reddit denied r/$subreddit (HTTP $code). Check that your OAuth app has approved Data API access, then log out and sign in again." else "Reddit returned HTTP $code for r/$subreddit.")
                 val root = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
                 val children = root.getJSONObject("data").getJSONArray("children")
                 buildList {
@@ -47,9 +47,11 @@ private suspend fun loadFeed(context: android.content.Context, feeds: List<Strin
                         val video = p.optBoolean("is_video")
                         val gallery = p.optJSONObject("preview")?.optJSONArray("images")?.optJSONObject(0)
                         val preview = gallery?.optJSONObject("source")?.optString("url")?.replace("&amp;", "&")
-                        val direct = p.optString("url_overridden_by_dest")
+                        val thumbnail = p.optString("thumbnail").takeIf { it.startsWith("https://") }
+                                                val direct = p.optString("url_overridden_by_dest")
                         val image = when {
                             !preview.isNullOrBlank() -> preview
+                            video && thumbnail != null -> thumbnail
                             direct.matches(Regex("https://.*\\.(jpg|jpeg|png|webp)(\\?.*)?", RegexOption.IGNORE_CASE)) -> direct
                             else -> ""
                         }
