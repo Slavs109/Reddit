@@ -6,7 +6,7 @@ plugins {
 android {
     namespace = "com.slavs109.redditgallery"
     compileSdk = 35
-    defaultConfig { applicationId = "com.slavs109.redditgallery"; minSdk = 26; targetSdk = 35; versionCode = 2; versionName = "0.2" }
+    defaultConfig { applicationId = "com.slavs109.redditgallery"; minSdk = 26; targetSdk = 35; versionCode = 3; versionName = "0.3" }
     buildFeatures { compose = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
