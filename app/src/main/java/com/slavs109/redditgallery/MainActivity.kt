@@ -53,8 +53,26 @@ private suspend fun loadFeed(context: android.content.Context, feeds: List<Strin
                             direct.matches(Regex("https://.*\\.(jpg|jpeg|png|webp)(\\?.*)?", RegexOption.IGNORE_CASE)) -> direct
                             else -> ""
                         }
-                        if (image.isBlank()) continue
-                        add(MediaPost(p.optString("id"), subreddit, p.optString("title"), image, video, p.optString("permalink")))
+                        // Inspired by MojiRS's gallery repair approach: use Reddit's
+                        // gallery_data/media_metadata rather than discarding gallery posts.
+                        val galleryItems = p.optJSONObject("gallery_data")?.optJSONArray("items")
+                        val metadata = p.optJSONObject("media_metadata")
+                        if (galleryItems != null && metadata != null) {
+                            for (index in 0 until galleryItems.length()) {
+                                val mediaId = galleryItems.optJSONObject(index)?.optString("media_id") ?: continue
+                                val media = metadata.optJSONObject(mediaId) ?: continue
+                                val source = media.optJSONObject("s")?.optString("u")?.replace("&amp;", "&")
+                                val previews = media.optJSONArray("p")
+                                val fallback = if (previews != null && previews.length() > 0)
+                                    previews.optJSONObject(previews.length() - 1)?.optString("u")?.replace("&amp;", "&") else null
+                                val url = source?.takeIf { it.startsWith("https://") }
+                                    ?: fallback?.takeIf { it.startsWith("https://") }
+                                    ?: "https://i.redd.it/$mediaId"
+                                add(MediaPost("${p.optString("id")}_$index", subreddit, p.optString("title"), url, false, p.optString("permalink")))
+                            }
+                        } else if (image.isNotBlank()) {
+                            add(MediaPost(p.optString("id"), subreddit, p.optString("title"), image, video, p.optString("permalink")))
+                        }
                     }
                 }
             } finally { connection.disconnect() }
