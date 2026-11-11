@@ -1,6 +1,9 @@
 package com.slavs109.redditgallery
 
 import android.os.Bundle
+import android.content.Intent
+import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.launch
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.clickable
@@ -23,13 +26,15 @@ import java.net.URL
 
 data class MediaPost(val id: String, val subreddit: String, val title: String, val image: String, val isVideo: Boolean, val url: String)
 
-private suspend fun loadFeed(feeds: List<String>): Result<List<MediaPost>> = withContext(Dispatchers.IO) {
+private suspend fun loadFeed(context: android.content.Context, feeds: List<String>): Result<List<MediaPost>> = withContext(Dispatchers.IO) {
     runCatching {
+        val accessToken = RedditAuth.validToken(context)
         feeds.flatMap { subreddit ->
-            val connection = (URL("https://www.reddit.com/r/${subreddit}/hot.json?limit=50&raw_json=1").openConnection() as HttpURLConnection)
+            val connection = (URL("https://oauth.reddit.com/r/${subreddit}/hot.json?limit=50&raw_json=1").openConnection() as HttpURLConnection)
             connection.connectTimeout = 10000
             connection.readTimeout = 10000
-            connection.setRequestProperty("User-Agent", "android:com.slavs109.redditgallery:v0.2 (public media browser)")
+            connection.setRequestProperty("User-Agent", RedditAuth.userAgent())
+            connection.setRequestProperty("Authorization", "Bearer $accessToken")
             try {
                 val code = connection.responseCode
                 if (code !in 200..299) error("Reddit returned HTTP $code for r/$subreddit. Public feed access may be restricted.")
@@ -58,14 +63,37 @@ private suspend fun loadFeed(feeds: List<String>): Result<List<MediaPost>> = wit
 }
 
 class MainActivity : ComponentActivity() {
+    private val loginResult = mutableStateOf<String?>(null)
+    private val authVersion = mutableIntStateOf(0)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { GalleryApp() }
+        handleCallback(intent)
+        setContent { GalleryApp(loginResult.value, authVersion.intValue) }
+    }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleCallback(intent)
+    }
+    private fun handleCallback(intent: Intent?) {
+        val uri = intent?.data ?: return
+        if (uri.scheme != "redditgallery" || uri.host != "oauth") return
+        Thread {
+            val result = RedditAuth.exchange(this, uri)
+            runOnUiThread {
+                loginResult.value = result.exceptionOrNull()?.message ?: "Logged in to Reddit."
+                authVersion.intValue++
+            }
+        }.start()
     }
 }
 
 @Composable
-fun GalleryApp() {
+fun GalleryApp(loginMessage: String?, authVersion: Int) {
+    val context = LocalContext.current
+    var clientId by remember { mutableStateOf(RedditAuth.clientId(context)) }
+    var loggedIn by remember(authVersion) { mutableStateOf(RedditAuth.signedIn(context)) }
+    var authError by remember { mutableStateOf<String?>(null) }
     var tab by remember { mutableStateOf("Gallery") }
     var filter by remember { mutableStateOf("All") }
     var input by remember { mutableStateOf("") }
@@ -75,10 +103,11 @@ fun GalleryApp() {
     var error by remember { mutableStateOf<String?>(null) }
     var posts by remember { mutableStateOf(emptyList<MediaPost>()) }
     var selected by remember { mutableStateOf<MediaPost?>(null) }
-    LaunchedEffect(feeds.toList(), reload) {
+    LaunchedEffect(feeds.toList(), reload, authVersion, loggedIn) {
+        if (!loggedIn) { posts = emptyList(); error = null; loading = false; return@LaunchedEffect }
         loading = true
         error = null
-        val result = loadFeed(feeds.toList())
+        val result = loadFeed(context, feeds.toList())
         result.onSuccess { posts = it }.onFailure { error = it.message ?: "Could not load Reddit feed"; posts = emptyList() }
         loading = false
     }
@@ -100,6 +129,7 @@ fun GalleryApp() {
                             FilterChip(selected = filter == name, onClick = { filter = name }, label = { Text(name) }, modifier = Modifier.padding(end = 6.dp))
                         } }
                         Row { Text("Combined gallery", Modifier.weight(1f)); TextButton(onClick = { reload++ }) { Text("Refresh") } }
+                        if (!loggedIn) Text("Log in through Settings to load Reddit posts.")
                         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
                         if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error)
                         val visible = posts.filter { filter == "All" || (filter == "Videos") == it.isVideo }
@@ -122,7 +152,24 @@ fun GalleryApp() {
                         feeds.toList().forEach { name -> Row { Text("r/$name", Modifier.weight(1f)); TextButton(onClick = { feeds.remove(name) }) { Text("Remove") } } }
                     }
                     "Favorites" -> Text("Local favorites are coming next.")
-                    else -> Text("Autoplay, sorting and grid size controls are coming next.")
+                    else -> {
+                        Text("Reddit account", style = MaterialTheme.typography.titleLarge)
+                        Text("Requires a Reddit-approved installed-app OAuth client ID. Redirect URI: redditgallery://oauth")
+                        OutlinedTextField(value = clientId, onValueChange = { clientId = it }, label = { Text("OAuth client ID") })
+                        Button(onClick = { RedditAuth.saveClientId(context, clientId); authError = null }) { Text("Save client ID") }
+                        if (loggedIn) {
+                            Text("Connected to Reddit")
+                            Button(onClick = { RedditAuth.logout(context); loggedIn = false }) { Text("Log out") }
+                        } else {
+                            Button(onClick = {
+                                RedditAuth.saveClientId(context, clientId)
+                                runCatching { context.startActivity(RedditAuth.login(context)) }
+                                    .onFailure { authError = it.message }
+                            }) { Text("Login with Reddit") }
+                        }
+                        if (loginMessage != null) Text(loginMessage)
+                        if (authError != null) Text(authError!!, color = MaterialTheme.colorScheme.error)
+                    }
                 }
             }
         }
